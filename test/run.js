@@ -5,6 +5,7 @@ import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
 import { mergeDuplicateArtwork } from '../src/merge.js';
 import { simplifyPath, simplifyShapes } from '../src/simplify.js';
+import { flattenLayers } from '../src/flatten.js';
 
 let pass = 0, fail = 0;
 const test = (name, fn) => {
@@ -305,6 +306,58 @@ test('simplifyShapes walks animated path keyframes too', () => {
   const { stats } = simplifyShapes(d, { tolerance: 0.5 });
   assert.equal(stats.paths, 2, 'both keyframes visited');
   assert.ok(stats.verticesAfter < stats.verticesBefore);
+});
+
+console.log('\nlayer flattening');
+test('layers become groups in a single layer, in the same order', () => {
+  const d = doc([gatedLayer(1, 10, 20), gatedLayer(2, 30, 40)]);
+  d.layers[0].nm = 'first'; d.layers[1].nm = 'second';
+  const { doc: r, stats } = flattenLayers(d);
+  assert.equal(r.layers.length, 1);
+  assert.equal(stats.groups, 2);
+  assert.equal(r.layers[0].shapes.length, 2);
+  assert.equal(r.layers[0].shapes[0].it[r.layers[0].shapes[0].it.length - 1].ty, 'tr', 'tr must be last in a group');
+});
+test('a parent chain is baked into the group transform', () => {
+  const parent = gatedLayer(1, 0, 60);
+  parent.ks.p = { a: 0, k: [100, 0] };
+  const child = { ...gatedLayer(2, 0, 60), parent: 1 };
+  child.ks.p = { a: 0, k: [10, 5] };
+  child.ks.a = { a: 0, k: [0, 0] };
+  const { doc: r } = flattenLayers(doc([parent, child]));
+  const trs = r.layers[0].shapes.map((g) => g.it[g.it.length - 1].p.k);
+  assert.deepEqual(trs[1], [110, 5], 'child position is parent + own');
+});
+test('a transform-only layer is absorbed, not emitted', () => {
+  const node = gatedLayer(1, 0, 60); node.shapes = [];
+  const { doc: r, stats } = flattenLayers(doc([node, { ...gatedLayer(2, 0, 60), parent: 1 }]));
+  assert.equal(stats.groups, 1);
+  assert.equal(r.layers[0].shapes.length, 1);
+});
+test('a lifetime becomes a gated group opacity', () => {
+  // real pipeline order: optimize turns the opacity gate into ip/op, then flatten
+  // has to turn that back into a group opacity, since groups have no in/out point
+  const { doc: o1 } = optimize(doc([gatedLayer(1, 5, 55), gatedLayer(2, 10, 20)]));
+  const { doc: r } = flattenLayers(o1);
+  const spanning = r.layers[0].shapes[0].it.at(-1).o;
+  assert.equal(spanning.a, 0, 'a group that covers the whole comp needs no schedule');
+  assert.equal(spanning.k, 100);
+  const gated = r.layers[0].shapes[1].it.at(-1).o;
+  assert.equal(gated.a, 1);
+  assert.deepEqual(gated.k.map((k) => [k.t, k.s[0]]), [[5, 0], [10, 100], [20, 0]]);
+});
+test('--chunk splits into several layers', () => {
+  const d = doc([gatedLayer(1, 0, 60), gatedLayer(2, 0, 60), gatedLayer(3, 0, 60)]);
+  const { doc: r } = flattenLayers(d, { chunk: 2 });
+  assert.equal(r.layers.length, 2);
+  assert.deepEqual(r.layers.map((l) => l.shapes.length), [2, 1]);
+});
+test('a layer with a mask or matte blocks flattening of that comp', () => {
+  const masked = gatedLayer(1, 0, 60);
+  masked.masksProperties = [{ mode: 'a', inv: false, o: { a: 0, k: 100 }, pt: { a: 0, k: { c: true, v: [[0, 0]], i: [[0, 0]], o: [[0, 0]] } } }];
+  const { doc: r, stats } = flattenLayers(doc([masked, gatedLayer(2, 0, 60)]));
+  assert.equal(r.layers.length, 2, 'left untouched');
+  assert.ok(stats.skipped > 0);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

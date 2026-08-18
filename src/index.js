@@ -4,4 +4,5 @@ export { analyze } from './analyze.js';
 export { resize } from './resize.js';
 export { mergeDuplicateArtwork } from './merge.js';
 export { simplifyShapes, simplifyPath } from './simplify.js';
+export { flattenLayers } from './flatten.js';
 export { verify, benchmark, findChrome } from './verify.js';

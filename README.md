@@ -37,6 +37,8 @@ lottie-squeeze animation.json --in-place       # overwrite, only if verification
 | `--strip-names` | drop `nm`/`mn`; safe, costs debuggability |
 | `--precision <n>` | round geometry to n decimals — **not pixel-exact** |
 | `--merge` | merge duplicate artwork into one layer per (shape, position) |
+| `--flatten` | collapse every layer into shape groups inside one layer |
+| `--chunk <n>` | with `--flatten`, cap groups per layer |
 | `--simplify <tol>` | simplify bezier paths within `tol` units — **lossy, reports the cost** |
 | `--strict` | refuse anything not pixel-exact, even with lossy options |
 | `--resize <WxH>` | change declared composition size — **does not reduce file size** |
@@ -87,6 +89,32 @@ Each transform is a no-op for the renderer, by construction:
 Single-element value arrays collapse to scalars, because lottie-web picks
 `ValueProperty` vs `MultiDimensionalProperty` on `typeof k === 'number'` — a
 rotation left as `[0]` gets applied as an array.
+
+## Cutting layer count
+
+A Lottie shape layer holds any number of groups, each with its own transform and
+opacity, and groups paint in array order exactly as layers paint in list order.
+So `--flatten` turns a frame-baked export's thousands of layers into thousands of
+groups inside **one** layer, composing each layer's whole parent chain into the
+group's transform. Paint order is preserved *by construction*, which is why this
+works where merging duplicate artwork does not.
+
+On the test file: **2,859 layers → 2**, and it takes brotli from 55 KB to 43 KB,
+because ~600 KB of per-layer `ks`/`ind`/`parent`/`ip`/`op` overhead collapses into
+much smaller group transforms.
+
+**It does not reduce how many paths get drawn.** 2,553 groups still produce 2,553
+draw operations, and renderers that build a node per shape group (lottie-ios's
+Core Animation engine among them) will not see their object count fall. What
+flattening buys is JSON size, tree depth, and parse cost. Genuinely fewer draws
+requires re-authoring the animation with fewer baked frames.
+
+Flattening is skipped for any composition containing a mask, matte, effect, blend
+mode, time remap, or a transform the group form cannot express, and those
+compositions are reported as left alone. It is not pixel-exact: nesting the
+transform one level deeper changes edge anti-aliasing slightly — 273 px of
+360,000 on the test file, versus 2,787 for the simplification it is usually
+paired with.
 
 ## Going lossy on purpose
 

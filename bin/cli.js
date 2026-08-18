@@ -5,6 +5,7 @@ import { gzipSync, brotliCompressSync, constants as zc } from 'node:zlib';
 import { optimize, DEFAULTS } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
 import { simplifyShapes } from '../src/simplify.js';
+import { flattenLayers } from '../src/flatten.js';
 import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
 import { mergeDuplicateArtwork } from '../src/merge.js';
@@ -45,6 +46,11 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
                            ${C.y('Lossy')}; reports the measured pixel cost.
         --strict           Refuse to write anything that is not pixel-exact, even
                            when lossy options were requested.
+        --flatten          Collapse every layer into shape groups inside one layer,
+                           baking parent chains into group transforms. Paint order
+                           is preserved by construction. Cuts layer count and JSON
+                           overhead; ${C.y('does not reduce how many paths are drawn')}.
+        --chunk <n>        With --flatten, split into layers of at most n groups.
         --dedup            Hoist duplicated paths into shared precomps. ${C.y('Opt-in')}:
                            big raw-size win, but ~2x slower playback. See README.
         --bench            Report parse/build/render timings for source vs output.
@@ -58,7 +64,7 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
 function parseArgs(argv) {
   const o = { inputs: [], out: null, inPlace: false, verify: true, size: 600,
     renderers: ['canvas', 'svg'], tolerance: 0, stripNames: false, precision: null,
-    dedup: false, merge: false, simplify: null, strict: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
+    dedup: false, merge: false, simplify: null, flatten: false, chunk: Infinity, strict: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
   const rest = [...argv];
   if (['analyze', 'bench'].includes(rest[0])) o.cmd = rest.shift();
   while (rest.length) {
@@ -74,6 +80,8 @@ function parseArgs(argv) {
       case '--strip-names': o.stripNames = true; break;
       case '--precision': o.precision = Number(rest.shift()); break;
       case '--dedup': o.dedup = true; break;
+      case '--flatten': o.flatten = true; break;
+      case '--chunk': o.chunk = Number(rest.shift()); break;
       case '--simplify': o.simplify = Number(rest.shift()); break;
       case '--strict': o.strict = true; break;
       case '--merge': o.merge = true; break;
@@ -149,6 +157,8 @@ async function runOptimize(opts, log) {
     if (opts.simplify != null) ({ stats: simplifyStats } = simplifyShapes(optimized, { tolerance: opts.simplify }));
     let mergeStats = null;
     if (opts.merge) ({ stats: mergeStats } = mergeDuplicateArtwork(optimized));
+    let flattenStats = null;
+    if (opts.flatten) ({ stats: flattenStats } = flattenLayers(optimized, { chunk: opts.chunk }));
     let dedupStats = null;
     if (opts.dedup) ({ stats: dedupStats } = dedupeShapes(optimized));
 
@@ -169,14 +179,14 @@ async function runOptimize(opts, log) {
 
     // A run that opts into a lossy transform is not held to pixel-identity; it is
     // held to *reporting* what it cost. --strict puts the hard gate back.
-    const lossy = opts.simplify != null || opts.precision != null || opts.dedup;
+    const lossy = opts.simplify != null || opts.precision != null || opts.dedup || opts.flatten;
     const target = opts.inPlace ? input : defaultOut(input, opts.inputs.length > 1 ? opts.out : opts.out);
     const ok = !ver || ver.identical || (lossy && !opts.strict);
     if (ok) writeFileSync(target, outText);
     else failed = true;
 
     if (opts.json) {
-      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, simplifyStats, mergeStats, dedupStats, verification: ver }, null, 2));
+      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, simplifyStats, flattenStats, mergeStats, dedupStats, verification: ver }, null, 2));
       continue;
     }
 
@@ -191,6 +201,7 @@ async function runOptimize(opts, log) {
     if (resizeStats) log(`  resized to ${optimized.w}x${optimized.h} (x${resizeStats.factor.toFixed(4)}) via ${resizeStats.rootLayersScaled} root layer transform(s); geometry untouched`);
     if (simplifyStats) log(`  simplified paths: ${simplifyStats.verticesBefore.toLocaleString()} → ${simplifyStats.verticesAfter.toLocaleString()} vertices (tolerance ${opts.simplify} units)`);
     if (mergeStats) log(`  merged ${mergeStats.groupsMerged} duplicate-artwork groups, removing ${mergeStats.layersRemoved} layers` + (mergeStats.cyclesBroken ? `  (${mergeStats.cyclesBroken} kept apart to preserve paint order)` : ''));
+    if (flattenStats) log(`  flattened ${flattenStats.layersBefore.toLocaleString()} layers → ${flattenStats.layersAfter} (${flattenStats.groups.toLocaleString()} shape groups; draw count unchanged)` + (flattenStats.skipped ? `  ${flattenStats.skipped} left alone` : ''));
     if (dedupStats) log(`  ${dedupStats.layersRewritten} layers → ${dedupStats.assetsCreated} shared precomps`);
 
     if (ver) {
