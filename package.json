@@ -6,8 +6,8 @@
   "bin": { "lottie-squeeze": "./bin/cli.js" },
   "exports": { ".": "./src/index.js" },
   "engines": { "node": ">=18" },
-  "files": ["bin", "src", "README.md"],
-  "scripts": { "test": "node test/run.js" },
+  "files": ["bin", "src", "tools", "README.md"],
+  "scripts": { "test": "node test/run.js", "test:tools": "python3 tools/test-svg-frames.py" },
   "dependencies": {
     "lottie-web": "^5.12.2",
     "puppeteer-core": "^24.0.0"

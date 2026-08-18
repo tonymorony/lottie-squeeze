@@ -116,6 +116,50 @@ transform one level deeper changes edge anti-aliasing slightly — 273 px of
 360,000 on the test file, versus 2,787 for the simplification it is usually
 paired with.
 
+## Building a Lottie from SVG frames
+
+When you have the source frames rather than a Figma/After Effects export — one SVG
+per frame, as Illustrator writes them from artboards — `tools/svg-frames-to-lottie.py`
+builds the animation directly, and it comes out an order of magnitude smaller and
+faster than a plugin export of the same artwork.
+
+```bash
+python3 tools/svg-frames-to-lottie.py "frames/JB WALK *.svg" -o jb-walk.json --fps 30
+node tools/verify-svg-frames.mjs jb-walk.json --size 400            # pixels vs the SVGs
+```
+
+It flattens each SVG to a paint-ordered list of shapes, then **deduplicates across
+time**: the same shape (geometry and style, up to translation) at the same position
+in several frames becomes one shape group whose opacity is a hold-keyframe track.
+The global paint order is a topological sort of every frame's order, so z-order is
+right by construction; groups that are paint-adjacent with the same style and the
+same visibility are merged into one fill. Along the way it drops what a frame
+export leaves behind — artwork from neighbouring artboards, copies hidden under an
+opaque background — resolves circle clip-paths geometrically so the output has no
+masks, and corrects sub-pixel artboard drift so the container does not jitter.
+
+The output is one shape layer with fills, strokes and hold keyframes only: no
+masks, mattes, precomps, effects or expressions — the subset every player renders
+on its fast path, including lottie-ios's Core Animation engine.
+
+Measured on an 18-frame walk cycle (2,553 SVG shapes, 670 KB of path data):
+
+|  | raw | gzip | brotli | groups | paths drawn per frame |
+| --- | --- | --- | --- | --- | --- |
+| SVG frames | 838 KB | — | — | — | 117–174 |
+| Lottie from SVG frames | 368 KB | 76 KB | 55 KB | 387 | 83–123 |
+
+Every frame is compared against its SVG rendered in the same Chrome: on that file
+the difference is the anti-aliasing of the outer circle edge (≈240 px of 91,000
+inked at 400 px, nothing perceptible in the artwork).
+
+Stdlib Python, no dependencies. Flags: `--fps`, `--precision`, `--crop` (tight
+composition around the visible content), `--no-merge`, `--no-realign`. It handles
+what Illustrator emits — `path` (M/L/H/V/C/S/Z), `circle`, `ellipse`, `rect`,
+`line`, `polygon`, `polyline`, CSS classes, `transform`, per-element `opacity`, and
+circle `clip-path`s — and stops with a clear message on anything else (gradients,
+arbitrary clip shapes, `use`, text, images).
+
 ## Going lossy on purpose
 
 When smallest-possible matters more than exactness, `--simplify <tol>` drops path
@@ -273,7 +317,8 @@ original. Options match the flags above (`dropNames`, `precision`, `dropDead`,
   base64 PNGs, this tool has little to work with.
 
 ```bash
-npm test        # 18 tests, no browser needed
+npm test        # 43 tests, no browser needed
+npm run test:tools   # svg-frames-to-lottie self-test (python3)
 ```
 
 ## License
