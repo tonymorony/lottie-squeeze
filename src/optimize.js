@@ -132,6 +132,43 @@ function roundTree(node, digits, key = null, inEase = false) {
   return node;
 }
 
+/**
+ * A mask that covers the whole layer, adds, is not inverted and is fully opaque
+ * changes nothing — but every renderer still pays for it, and on iOS/Core
+ * Animation a mask forces offscreen rendering. Figma's exporter emits exactly
+ * this on the root precomp, which already clips to its own w/h.
+ *
+ * Only claimed when the layer has real bounds (precomp/solid) and the path is a
+ * rectangle covering them: bbox must contain the bounds, and the shoelace area
+ * must match the bbox, so an L-shape or a cut-out is never mistaken for full
+ * coverage.
+ */
+function dropNoOpMasks(l, stats) {
+  const ms = l.masksProperties;
+  if (!Array.isArray(ms) || ms.length !== 1) return;
+  const m = ms[0];
+  if (m.mode !== 'a' || m.inv) return;
+  if (!(m.o && m.o.a === 0 && m.o.k === 100)) return;
+  if (!m.pt || m.pt.a !== 0) return;
+  const path = m.pt.k;
+  if (!path || !Array.isArray(path.v) || path.v.length > 8 || path.c === false) return;
+  const { w, h } = l;
+  if (!(w > 0 && h > 0)) return;
+  const xs = path.v.map((p) => p[0]), ys = path.v.map((p) => p[1]);
+  const x0 = Math.min(...xs), y0 = Math.min(...ys), x1 = Math.max(...xs), y1 = Math.max(...ys);
+  if (!(x0 <= 0 && y0 <= 0 && x1 >= w && y1 >= h)) return;
+  let area = 0;
+  for (let i = 0; i < path.v.length; i++) {
+    const a = path.v[i], b = path.v[(i + 1) % path.v.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  const bbox = (x1 - x0) * (y1 - y0);
+  if (bbox <= 0 || Math.abs(area) / 2 < bbox * 0.99) return;
+  delete l.masksProperties;
+  delete l.hasMask;
+  stats.masksDropped++;
+}
+
 const allComps = (doc) => [doc, ...(doc.assets ?? []).filter((a) => Array.isArray(a.layers))];
 
 export const DEFAULTS = {
@@ -140,6 +177,7 @@ export const DEFAULTS = {
   retime: true,        // convert leading/trailing zero opacity into ip/op
   holdEasing: true,    // strip i/o beziers from hold keyframes
   defaults: true,      // strip keys equal to the format default
+  noOpMasks: true,     // drop masks that cover the whole layer and change nothing
   dropNames: false,    // strip nm/mn (safe, but hurts debuggability)
   dropDead: true,      // remove layers whose opacity is zero for their whole life
   precision: null,     // round geometry to N decimals — opt-in, not pixel-exact
@@ -149,7 +187,7 @@ export function optimize(doc, options = {}) {
   const opt = { ...DEFAULTS, ...options };
   const stats = {
     keyframesBefore: 0, keyframesAfter: 0, layersRetimed: 0,
-    propsMadeStatic: 0, layersRemoved: 0, layersTotal: 0,
+    propsMadeStatic: 0, layersRemoved: 0, layersTotal: 0, masksDropped: 0,
   };
 
   const walk = (node, ip, op) => {
@@ -220,6 +258,9 @@ export function optimize(doc, options = {}) {
       for (const key of ['shapes', 'masksProperties', 'ef', 't']) {
         if (l[key]) walk(l[key], ip, op);
       }
+      // after the walk: a frame-baked mask arrives as hundreds of identical hold
+      // keyframes and only becomes recognisably static once those are collapsed
+      if (opt.noOpMasks) dropNoOpMasks(l, stats);
 
       if (opt.defaults) {
         delete l.ln;                             // expression-only layer id

@@ -186,7 +186,8 @@ async function runOptimize(opts, log) {
         ` → ${kb(brotliCompressSync(outText, { params: { [zc.BROTLI_PARAM_QUALITY]: 11 } }).length)}`);
     log(`  ${stats.keyframesBefore.toLocaleString()} keyframes → ${stats.keyframesAfter.toLocaleString()}` +
         `  ·  ${stats.layersRetimed} layers retimed  ·  ${stats.propsMadeStatic} props made static` +
-        (stats.layersRemoved ? `  ·  ${stats.layersRemoved} dead layers removed` : ''));
+        (stats.layersRemoved ? `  ·  ${stats.layersRemoved} dead layers removed` : '') +
+        (stats.masksDropped ? `  ·  ${stats.masksDropped} no-op mask(s) dropped` : ''));
     if (resizeStats) log(`  resized to ${optimized.w}x${optimized.h} (x${resizeStats.factor.toFixed(4)}) via ${resizeStats.rootLayersScaled} root layer transform(s); geometry untouched`);
     if (simplifyStats) log(`  simplified paths: ${simplifyStats.verticesBefore.toLocaleString()} → ${simplifyStats.verticesAfter.toLocaleString()} vertices (tolerance ${opts.simplify} units)`);
     if (mergeStats) log(`  merged ${mergeStats.groupsMerged} duplicate-artwork groups, removing ${mergeStats.layersRemoved} layers` + (mergeStats.cyclesBroken ? `  (${mergeStats.cyclesBroken} kept apart to preserve paint order)` : ''));

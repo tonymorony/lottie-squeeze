@@ -85,6 +85,51 @@ test('dropDead:false keeps the invisible layer', () => {
   assert.equal(optimize(doc([l]), { dropDead: false }).doc.layers.length, 1);
 });
 
+console.log('\nno-op masks');
+const fullMask = (w, h, inset = 0) => ({
+  nm: '', inv: false, mode: 'a', x: { a: 0, k: 0 }, o: { a: 0, k: 100 },
+  pt: { a: 0, k: { c: true, v: [[inset, inset], [w - inset, inset], [w - inset, h - inset], [inset, h - inset]],
+                   i: [[0, 0], [0, 0], [0, 0], [0, 0]], o: [[0, 0], [0, 0], [0, 0], [0, 0]] } },
+});
+const precomp = (mask) => ({ ty: 0, ind: 1, refId: '1', w: 300, h: 300, ip: 0, op: 60, sr: 1, st: 0,
+  hasMask: !!mask, masksProperties: mask ? [mask] : undefined,
+  ks: { a: { a: 0, k: [0, 0] }, p: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } } });
+
+test('a full-bounds additive mask is dropped', () => {
+  const { doc: d, stats } = optimize(doc([precomp(fullMask(300, 300))]));
+  assert.equal(stats.masksDropped, 1);
+  assert.equal('masksProperties' in d.layers[0], false);
+  assert.equal('hasMask' in d.layers[0], false);
+});
+test('a full-bounds mask baked as repeated hold keyframes is still dropped', () => {
+  const m = fullMask(300, 300);
+  const path = m.pt.k;
+  m.pt = { a: 1, k: [0, 1, 2, 3].map((t) => ({ h: 1, s: [path], t })).concat([{ s: [path], t: 60 }]) };
+  const { stats } = optimize(doc([precomp(m)]));
+  assert.equal(stats.masksDropped, 1);
+});
+test('a mask smaller than the layer is kept', () => {
+  const { doc: d, stats } = optimize(doc([precomp(fullMask(300, 300, 40))]));
+  assert.equal(stats.masksDropped, 0);
+  assert.equal(d.layers[0].masksProperties.length, 1);
+});
+test('an inverted or subtractive mask is kept', () => {
+  for (const tweak of [{ inv: true }, { mode: 's' }]) {
+    const { stats } = optimize(doc([precomp({ ...fullMask(300, 300), ...tweak })]));
+    assert.equal(stats.masksDropped, 0, JSON.stringify(tweak));
+  }
+});
+test('a partially transparent mask is kept', () => {
+  const m = fullMask(300, 300); m.o = { a: 0, k: 50 };
+  assert.equal(optimize(doc([precomp(m)])).stats.masksDropped, 0);
+});
+test('a full-bbox but non-rectangular mask is kept', () => {
+  const m = fullMask(300, 300);
+  m.pt.k.v = [[0, 0], [300, 0], [300, 300], [150, 150], [0, 300]];   // notched
+  m.pt.k.i = m.pt.k.o = m.pt.k.v.map(() => [0, 0]);
+  assert.equal(optimize(doc([precomp(m)])).stats.masksDropped, 0);
+});
+
 console.log('\nsafety invariants');
 test('sr and st survive (dropping them makes lottie-web compute NaN)', () => {
   const l = optimize(doc([gatedLayer(1, 10, 20)])).doc.layers[0];
