@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { optimize, collapseHolds, trimToLife } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
 import { analyze } from '../src/analyze.js';
+import { resize } from '../src/resize.js';
 
 let pass = 0, fail = 0;
 const test = (name, fn) => {
@@ -137,6 +138,36 @@ test('analyze counts redundant holds and retimable layers', () => {
   assert.equal(a.retimable, 2);
   assert.equal(a.distinctShapes, 1);
   assert.ok(a.duplicateShapeBytes > 0);
+});
+
+console.log('\nresize');
+test('resize pushes the factor onto root layer transforms, not geometry', () => {
+  const before = JSON.stringify(gatedLayer(1, 10, 20).shapes);
+  const { doc: d, stats } = resize(doc([gatedLayer(1, 10, 20)]), 100, 100);
+  assert.equal(d.w, 100);
+  assert.equal(d.h, 100);
+  assert.equal(stats.factor, 1);
+  const { doc: d3 } = resize(doc([gatedLayer(1, 10, 20)]), 50, 50);
+  const l = d3.layers[0];
+  assert.deepEqual(l.ks.p.k, [25, 25], 'position scaled');
+  assert.deepEqual(l.ks.s.k, [50, 50], 'scale percentage halved');
+  assert.deepEqual(l.ks.a.k, [0, 0], 'anchor left alone');
+  assert.equal(JSON.stringify(l.shapes), before, 'path coordinates untouched');
+});
+test('resize skips parented layers so the factor is not applied twice', () => {
+  const { doc: d } = resize(doc([gatedLayer(1, 10, 20), { ...gatedLayer(2, 10, 20), parent: 1 }]), 50, 50);
+  assert.deepEqual(d.layers[1].ks.s.k, [100, 100], 'child inherits from its parent');
+});
+test('resize scales spatial tangents on animated position', () => {
+  const l = gatedLayer(1, 10, 20);
+  l.ks.p = { a: 1, k: [{ t: 0, s: [10, 10], ti: [2, 2], to: [4, 4] }, { t: 30, s: [20, 20] }] };
+  const { doc: d } = resize(doc([l]), 50, 50);
+  assert.deepEqual(d.layers[0].ks.p.k[0].s, [5, 5]);
+  assert.deepEqual(d.layers[0].ks.p.k[0].ti, [1, 1]);
+  assert.deepEqual(d.layers[0].ks.p.k[0].to, [2, 2]);
+});
+test('non-uniform resize is refused rather than silently distorting', () => {
+  assert.throws(() => resize(doc([gatedLayer(1, 10, 20)]), 100, 50), /non-uniform/);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

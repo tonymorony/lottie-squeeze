@@ -36,6 +36,7 @@ lottie-squeeze animation.json --in-place       # overwrite, only if verification
 | `--tolerance <n>` | permit up to n differing pixels per frame, default `0` |
 | `--strip-names` | drop `nm`/`mn`; safe, costs debuggability |
 | `--precision <n>` | round geometry to n decimals — **not pixel-exact** |
+| `--resize <WxH>` | change declared composition size — **does not reduce file size** |
 | `--dedup` | hoist duplicated paths into shared precomps — **opt-in, see below** |
 | `--bench` | parse / build / per-frame render timings, before vs after |
 | `--json` | machine-readable output |
@@ -84,6 +85,29 @@ Single-element value arrays collapse to scalars, because lottie-web picks
 `ValueProperty` vs `MultiDimensionalProperty` on `typeof k === 'number'` — a
 rotation left as `[0]` gets applied as an array.
 
+## Resizing does not compress
+
+`--resize 100x100` is there because some pipelines read `w`/`h` as the real size,
+not because it saves anything. Lottie is vector: `w`/`h` are a viewBox, every
+player already scales to whatever box you hand it, and a file's weight is vertex
+count, not canvas size.
+
+Resizing by rewriting coordinates actively costs bytes. Measured on the 300x300
+test file, dividing every number by 3:
+
+| | vs original |
+| --- | --- |
+| coordinates /3, rounded to 2dp | **+34.7 KB** |
+| coordinates /3, rounded to 3dp | **+182.4 KB** |
+
+`127.15` becomes `42.38` — no shorter — while exact values like `300` turn into
+repeating decimals. So `--resize` leaves geometry exactly as authored and pushes
+the factor onto the root layer transforms instead. On the test file that changed
+the output by **+26 bytes** (0.001%) and stayed pixel-identical across all 39
+frames on both renderers.
+
+To simply *display* an animation smaller, change nothing — size the container.
+
 ## Safety rules
 
 Wired into the code, not left to the caller:
@@ -96,6 +120,9 @@ Wired into the code, not left to the caller:
 - **Track matte sources (`td`) are never retimed.** Their visibility masks the
   layer below.
 - **Geometry precision is preserved** unless you explicitly ask otherwise.
+- **Non-uniform resizes are refused** rather than silently distorting the artwork.
+- **Parented layers are skipped when resizing**, since they already inherit the
+  factor through the hierarchy; scaling them too would apply it twice.
 
 ## Rejected optimizations
 

@@ -5,6 +5,7 @@ import { gzipSync, brotliCompressSync, constants as zc } from 'node:zlib';
 import { optimize, DEFAULTS } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
 import { analyze } from '../src/analyze.js';
+import { resize } from '../src/resize.js';
 import { verify, benchmark, findChrome } from '../src/verify.js';
 
 const C = process.stdout.isTTY
@@ -31,6 +32,9 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
         --strip-names      Drop nm/mn. Safe, costs debuggability. Default off.
         --precision <n>    Round geometry to n decimals. ${C.y('Not pixel-exact')} — shifts
                            anti-aliasing. Verification will flag it; use --tolerance.
+        --resize <WxH>     Change declared composition size, by scaling the root
+                           layer transforms — geometry is left as authored. Aspect
+                           ratio must be preserved. ${C.y('Does not reduce file size.')}
         --dedup            Hoist duplicated paths into shared precomps. ${C.y('Opt-in')}:
                            big raw-size win, but ~2x slower playback. See README.
         --bench            Report parse/build/render timings for source vs output.
@@ -44,7 +48,7 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
 function parseArgs(argv) {
   const o = { inputs: [], out: null, inPlace: false, verify: true, size: 600,
     renderers: ['canvas', 'svg'], tolerance: 0, stripNames: false, precision: null,
-    dedup: false, bench: false, json: false, quiet: false, cmd: 'optimize' };
+    dedup: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
   const rest = [...argv];
   if (['analyze', 'bench'].includes(rest[0])) o.cmd = rest.shift();
   while (rest.length) {
@@ -60,6 +64,7 @@ function parseArgs(argv) {
       case '--strip-names': o.stripNames = true; break;
       case '--precision': o.precision = Number(rest.shift()); break;
       case '--dedup': o.dedup = true; break;
+      case '--resize': o.resize = rest.shift(); break;
       case '--bench': o.bench = true; break;
       case '--json': o.json = true; break;
       case '-q': case '--quiet': o.quiet = true; break;
@@ -120,6 +125,12 @@ async function runOptimize(opts, log) {
     const { doc: optimized, stats } = optimize(working, {
       ...DEFAULTS, dropNames: opts.stripNames, precision: opts.precision,
     });
+    let resizeStats = null;
+    if (opts.resize) {
+      const m = /^(\d+(?:\.\d+)?)\s*[x*×]\s*(\d+(?:\.\d+)?)$/.exec(opts.resize);
+      if (!m) throw new Error(`--resize expects WxH, got "${opts.resize}"`);
+      ({ stats: resizeStats } = resize(optimized, Number(m[1]), Number(m[2])));
+    }
     let dedupStats = null;
     if (opts.dedup) ({ stats: dedupStats } = dedupeShapes(optimized));
 
@@ -144,7 +155,7 @@ async function runOptimize(opts, log) {
     else failed = true;
 
     if (opts.json) {
-      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, dedupStats, verification: ver }, null, 2));
+      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, dedupStats, verification: ver }, null, 2));
       continue;
     }
 
@@ -155,6 +166,7 @@ async function runOptimize(opts, log) {
     log(`  ${stats.keyframesBefore.toLocaleString()} keyframes → ${stats.keyframesAfter.toLocaleString()}` +
         `  ·  ${stats.layersRetimed} layers retimed  ·  ${stats.propsMadeStatic} props made static` +
         (stats.layersRemoved ? `  ·  ${stats.layersRemoved} dead layers removed` : ''));
+    if (resizeStats) log(`  resized to ${optimized.w}x${optimized.h} (x${resizeStats.factor.toFixed(4)}) via ${resizeStats.rootLayersScaled} root layer transform(s); geometry untouched`);
     if (dedupStats) log(`  ${dedupStats.layersRewritten} layers → ${dedupStats.assetsCreated} shared precomps`);
 
     if (ver) {
