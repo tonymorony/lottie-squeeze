@@ -1,0 +1,17 @@
+{
+  "name": "lottie-squeeze",
+  "version": "1.0.0",
+  "description": "Lottie optimizer that proves its own output — every optimization is verified pixel-identical against the source by rendering both files in a real browser.",
+  "type": "module",
+  "bin": { "lottie-squeeze": "./bin/cli.js" },
+  "exports": { ".": "./src/index.js" },
+  "engines": { "node": ">=18" },
+  "files": ["bin", "src", "README.md"],
+  "scripts": { "test": "node test/run.js" },
+  "dependencies": {
+    "lottie-web": "^5.12.2",
+    "puppeteer-core": "^24.0.0"
+  },
+  "keywords": ["lottie", "bodymovin", "optimize", "compress", "animation", "after-effects", "figma"],
+  "license": "MIT"
+}
