@@ -316,6 +316,9 @@ original. Options match the flags above (`dropNames`, `precision`, `dropDead`,
 - Image assets are passed through untouched. If your file is mostly embedded
   base64 PNGs, this tool has little to work with.
 
+Playback benchmarks across lottie-web, lottie-android and Skottie live in
+[`bench/`](bench/README.md); the artwork is not committed, bring your own.
+
 ```bash
 npm test        # 43 tests, no browser needed
 npm run test:tools   # svg-frames-to-lottie self-test (python3)
