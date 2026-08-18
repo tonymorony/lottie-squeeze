@@ -4,6 +4,7 @@ import { dedupeShapes } from '../src/dedup.js';
 import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
 import { mergeDuplicateArtwork } from '../src/merge.js';
+import { simplifyPath, simplifyShapes } from '../src/simplify.js';
 
 let pass = 0, fail = 0;
 const test = (name, fn) => {
@@ -212,6 +213,53 @@ test('a merge that would change paint order is refused', () => {
   const { stats } = mergeDuplicateArtwork(optimize(doc([a1, b, a2])).doc);
   assert.equal(stats.groupsMerged, 0);
   assert.ok(stats.cyclesBroken >= 1);
+});
+
+console.log('\npath simplification');
+const circlePath = (n, r = 100) => {
+  const v = [], i = [], o = [];
+  for (let k = 0; k < n; k++) {
+    const a = (2 * Math.PI * k) / n;
+    v.push([r * Math.cos(a), r * Math.sin(a)]);
+    // tangents for a smooth circle through n points
+    const h = (4 / 3) * Math.tan(Math.PI / (2 * n)) * r;
+    o.push([-h * Math.sin(a), h * Math.cos(a)]);
+    i.push([h * Math.sin(a), -h * Math.cos(a)]);
+  }
+  return { c: true, v, i, o };
+};
+test('an over-sampled circle loses vertices without losing its shape', () => {
+  const p = circlePath(24);
+  const before = p.v.length;
+  simplifyPath(p, 0.5);
+  assert.ok(p.v.length < before, `expected fewer than ${before}, got ${p.v.length}`);
+  assert.ok(p.v.length >= 4, 'a circle still needs at least 4 vertices');
+  // every retained vertex still sits on the circle
+  for (const [x, y] of p.v) assert.ok(Math.abs(Math.hypot(x, y) - 100) < 1, 'vertex left the circle');
+});
+test('tolerance 0 changes nothing', () => {
+  const p = circlePath(12);
+  const before = JSON.stringify(p);
+  simplifyPath(p, 0);
+  assert.equal(JSON.stringify(p), before);
+});
+test('a tighter tolerance keeps at least as many vertices', () => {
+  const a = circlePath(32), b = circlePath(32);
+  simplifyPath(a, 0.1);
+  simplifyPath(b, 5);
+  assert.ok(a.v.length >= b.v.length);
+});
+test('a triangle is already minimal and survives untouched', () => {
+  const p = { c: true, v: [[0, 0], [100, 0], [50, 80]], i: [[0, 0], [0, 0], [0, 0]], o: [[0, 0], [0, 0], [0, 0]] };
+  simplifyPath(p, 2);
+  assert.equal(p.v.length, 3);
+});
+test('simplifyShapes walks animated path keyframes too', () => {
+  const shape = { ty: 'sh', ks: { a: 1, k: [{ t: 0, s: [circlePath(24)] }, { t: 10, s: [circlePath(24)] }] } };
+  const d = doc([{ ...gatedLayer(1, 10, 20), shapes: [shape] }]);
+  const { stats } = simplifyShapes(d, { tolerance: 0.5 });
+  assert.equal(stats.paths, 2, 'both keyframes visited');
+  assert.ok(stats.verticesAfter < stats.verticesBefore);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

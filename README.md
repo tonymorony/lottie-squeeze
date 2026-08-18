@@ -37,6 +37,8 @@ lottie-squeeze animation.json --in-place       # overwrite, only if verification
 | `--strip-names` | drop `nm`/`mn`; safe, costs debuggability |
 | `--precision <n>` | round geometry to n decimals — **not pixel-exact** |
 | `--merge` | merge duplicate artwork into one layer per (shape, position) |
+| `--simplify <tol>` | simplify bezier paths within `tol` units — **lossy, reports the cost** |
+| `--strict` | refuse anything not pixel-exact, even with lossy options |
 | `--resize <WxH>` | change declared composition size — **does not reduce file size** |
 | `--dedup` | hoist duplicated paths into shared precomps — **opt-in, see below** |
 | `--bench` | parse / build / per-frame render timings, before vs after |
@@ -85,6 +87,33 @@ Each transform is a no-op for the renderer, by construction:
 Single-element value arrays collapse to scalars, because lottie-web picks
 `ValueProperty` vs `MultiDimensionalProperty` on `typeof k === 'number'` — a
 rotation left as `[0]` gets applied as an array.
+
+## Going lossy on purpose
+
+When smallest-possible matters more than exactness, `--simplify <tol>` drops path
+vertices whose removal moves the curve less than `tol` composition units. The
+replacement is a least-squares refit that keeps the neighbours' tangent
+directions and solves for their magnitudes, so `tol` is a real geometric bound,
+not a knob — a naive vertex drop rounds off corners badly at the same count.
+
+A lossy run is not held to pixel-identity; it is held to *reporting what it cost*.
+The verifier still runs and prints how many pixels moved and how many did so
+perceptibly (Δ>32). `--strict` puts the hard gate back.
+
+Measured on the test file, `--simplify N --dedup` against the 300x300 source:
+
+| tol | raw | gzip | brotli | px differing | perceptibly |
+| --- | --- | --- | --- | --- | --- |
+| — (lossless) | 2.09 MB | 360 KB | 71 KB | 0 | 0 |
+| 0 (dedup only) | 1.24 MB | 153 KB | 82 KB | 1.3% | 21 |
+| 0.5 | 1.14 MB | 126 KB | 67 KB | 5.0% | 1,268 |
+| **1.0** | **1.11 MB** | **120 KB** | **63 KB** | 6.2% | 2,805 |
+| 2.0 | 1.09 MB | 113 KB | 59 KB | 8.1% | 5,888 |
+
+Past ~1.0 the curve flattens: tol 2.0 buys 22 KB more and visibly deforms eye
+highlights and other small features under magnification. Percentages are of inked
+pixels at 600x600, i.e. 4x the artwork's native scale, so they overstate what a
+viewer at normal size sees — but compare levels honestly.
 
 ## Duplicated paths, and why they usually cannot be merged
 

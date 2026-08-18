@@ -90,13 +90,15 @@ export async function verify(docA, docB, {
           await new Promise((res) => requestAnimationFrame(res));
           const pa = xa.getImageData(0, 0, ca.width, ca.height).data;
           const pb = xb.getImageData(0, 0, cb.width, cb.height).data;
-          let maxd = 0, ndiff = 0;
+          let maxd = 0, ndiff = 0, visible = 0, sum = 0, inked = 0;
           for (let i = 0; i < pa.length; i += 4) {
             let d = 0;
             for (let c = 0; c < 4; c++) { const x = Math.abs(pa[i + c] - pb[i + c]); if (x > d) d = x; }
-            if (d) { ndiff++; if (d > maxd) maxd = d; }
+            if (pa[i + 3] > 0) inked++;
+            if (d) { ndiff++; sum += d; if (d > maxd) maxd = d; if (d > 32) visible++; }
           }
-          frames.push({ frame: f, maxChannelDiff: maxd, diffPixels: ndiff, totalPixels: pa.length / 4 });
+          frames.push({ frame: f, maxChannelDiff: maxd, diffPixels: ndiff, visiblePixels: visible,
+                        meanDiff: ndiff ? sum / ndiff : 0, inkedPixels: inked, totalPixels: pa.length / 4 });
         }
         a.destroy(); b.destroy();
         return { frames, totalA: a.totalFrames, totalB: b.totalFrames };

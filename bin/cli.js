@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import { gzipSync, brotliCompressSync, constants as zc } from 'node:zlib';
 import { optimize, DEFAULTS } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
+import { simplifyShapes } from '../src/simplify.js';
 import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
 import { mergeDuplicateArtwork } from '../src/merge.js';
@@ -39,6 +40,11 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
         --merge            Merge duplicate artwork: one layer per (shape, position)
                            instead of one per exported frame. Lossless, and gated
                            on paint order staying consistent.
+        --simplify <tol>   Simplify bezier paths, dropping vertices whose removal
+                           moves the curve less than <tol> composition units.
+                           ${C.y('Lossy')}; reports the measured pixel cost.
+        --strict           Refuse to write anything that is not pixel-exact, even
+                           when lossy options were requested.
         --dedup            Hoist duplicated paths into shared precomps. ${C.y('Opt-in')}:
                            big raw-size win, but ~2x slower playback. See README.
         --bench            Report parse/build/render timings for source vs output.
@@ -52,7 +58,7 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
 function parseArgs(argv) {
   const o = { inputs: [], out: null, inPlace: false, verify: true, size: 600,
     renderers: ['canvas', 'svg'], tolerance: 0, stripNames: false, precision: null,
-    dedup: false, merge: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
+    dedup: false, merge: false, simplify: null, strict: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
   const rest = [...argv];
   if (['analyze', 'bench'].includes(rest[0])) o.cmd = rest.shift();
   while (rest.length) {
@@ -68,6 +74,8 @@ function parseArgs(argv) {
       case '--strip-names': o.stripNames = true; break;
       case '--precision': o.precision = Number(rest.shift()); break;
       case '--dedup': o.dedup = true; break;
+      case '--simplify': o.simplify = Number(rest.shift()); break;
+      case '--strict': o.strict = true; break;
       case '--merge': o.merge = true; break;
       case '--no-merge': o.merge = false; break;
       case '--resize': o.resize = rest.shift(); break;
@@ -137,6 +145,8 @@ async function runOptimize(opts, log) {
       if (!m) throw new Error(`--resize expects WxH, got "${opts.resize}"`);
       ({ stats: resizeStats } = resize(optimized, Number(m[1]), Number(m[2])));
     }
+    let simplifyStats = null;
+    if (opts.simplify != null) ({ stats: simplifyStats } = simplifyShapes(optimized, { tolerance: opts.simplify }));
     let mergeStats = null;
     if (opts.merge) ({ stats: mergeStats } = mergeDuplicateArtwork(optimized));
     let dedupStats = null;
@@ -157,13 +167,16 @@ async function runOptimize(opts, log) {
       }
     }
 
+    // A run that opts into a lossy transform is not held to pixel-identity; it is
+    // held to *reporting* what it cost. --strict puts the hard gate back.
+    const lossy = opts.simplify != null || opts.precision != null || opts.dedup;
     const target = opts.inPlace ? input : defaultOut(input, opts.inputs.length > 1 ? opts.out : opts.out);
-    const ok = !ver || ver.identical;
+    const ok = !ver || ver.identical || (lossy && !opts.strict);
     if (ok) writeFileSync(target, outText);
     else failed = true;
 
     if (opts.json) {
-      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, mergeStats, dedupStats, verification: ver }, null, 2));
+      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, simplifyStats, mergeStats, dedupStats, verification: ver }, null, 2));
       continue;
     }
 
@@ -175,12 +188,20 @@ async function runOptimize(opts, log) {
         `  ·  ${stats.layersRetimed} layers retimed  ·  ${stats.propsMadeStatic} props made static` +
         (stats.layersRemoved ? `  ·  ${stats.layersRemoved} dead layers removed` : ''));
     if (resizeStats) log(`  resized to ${optimized.w}x${optimized.h} (x${resizeStats.factor.toFixed(4)}) via ${resizeStats.rootLayersScaled} root layer transform(s); geometry untouched`);
+    if (simplifyStats) log(`  simplified paths: ${simplifyStats.verticesBefore.toLocaleString()} → ${simplifyStats.verticesAfter.toLocaleString()} vertices (tolerance ${opts.simplify} units)`);
     if (mergeStats) log(`  merged ${mergeStats.groupsMerged} duplicate-artwork groups, removing ${mergeStats.layersRemoved} layers` + (mergeStats.cyclesBroken ? `  (${mergeStats.cyclesBroken} kept apart to preserve paint order)` : ''));
     if (dedupStats) log(`  ${dedupStats.layersRewritten} layers → ${dedupStats.assetsCreated} shared precomps`);
 
     if (ver) {
       const w = ver.worst;
-      if (ver.identical) {
+      if (!ver.identical && lossy && !opts.strict) {
+        const w = ver.worst;
+        log(`  ${C.y('~ not pixel-identical')} (lossy options requested) — worst frame ${w.frame}:` +
+            ` ${w.diffPixels.toLocaleString()} px differ of ${w.inkedPixels.toLocaleString()} inked` +
+            ` (${(100 * w.diffPixels / w.inkedPixels).toFixed(1)}%),` +
+            ` ${w.visiblePixels.toLocaleString()} of them perceptibly (Δ>32), mean Δ ${w.meanDiff.toFixed(1)}`);
+        log(`  ${C.dim('add --strict to refuse anything but a pixel-exact result')}`);
+      } else if (ver.identical) {
         log(`  ${C.g('✓ verified identical')} — ${ver.frames} frames, canvas @${opts.size}px, 0/${w?.totalPixels.toLocaleString()} px differ` +
             (ver.svg ? `; svg renderer ${ver.svg.frames} frames hash-identical` : ''));
       } else {
