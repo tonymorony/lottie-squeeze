@@ -6,6 +6,7 @@ import { optimize, DEFAULTS } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
 import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
+import { mergeDuplicateArtwork } from '../src/merge.js';
 import { verify, benchmark, findChrome } from '../src/verify.js';
 
 const C = process.stdout.isTTY
@@ -35,6 +36,9 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
         --resize <WxH>     Change declared composition size, by scaling the root
                            layer transforms — geometry is left as authored. Aspect
                            ratio must be preserved. ${C.y('Does not reduce file size.')}
+        --merge            Merge duplicate artwork: one layer per (shape, position)
+                           instead of one per exported frame. Lossless, and gated
+                           on paint order staying consistent.
         --dedup            Hoist duplicated paths into shared precomps. ${C.y('Opt-in')}:
                            big raw-size win, but ~2x slower playback. See README.
         --bench            Report parse/build/render timings for source vs output.
@@ -48,7 +52,7 @@ ${C.b('lottie-squeeze')} — optimize Lottie JSON, and prove the result still re
 function parseArgs(argv) {
   const o = { inputs: [], out: null, inPlace: false, verify: true, size: 600,
     renderers: ['canvas', 'svg'], tolerance: 0, stripNames: false, precision: null,
-    dedup: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
+    dedup: false, merge: false, bench: false, json: false, quiet: false, resize: null, cmd: 'optimize' };
   const rest = [...argv];
   if (['analyze', 'bench'].includes(rest[0])) o.cmd = rest.shift();
   while (rest.length) {
@@ -64,6 +68,8 @@ function parseArgs(argv) {
       case '--strip-names': o.stripNames = true; break;
       case '--precision': o.precision = Number(rest.shift()); break;
       case '--dedup': o.dedup = true; break;
+      case '--merge': o.merge = true; break;
+      case '--no-merge': o.merge = false; break;
       case '--resize': o.resize = rest.shift(); break;
       case '--bench': o.bench = true; break;
       case '--json': o.json = true; break;
@@ -131,6 +137,8 @@ async function runOptimize(opts, log) {
       if (!m) throw new Error(`--resize expects WxH, got "${opts.resize}"`);
       ({ stats: resizeStats } = resize(optimized, Number(m[1]), Number(m[2])));
     }
+    let mergeStats = null;
+    if (opts.merge) ({ stats: mergeStats } = mergeDuplicateArtwork(optimized));
     let dedupStats = null;
     if (opts.dedup) ({ stats: dedupStats } = dedupeShapes(optimized));
 
@@ -155,7 +163,7 @@ async function runOptimize(opts, log) {
     else failed = true;
 
     if (opts.json) {
-      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, dedupStats, verification: ver }, null, 2));
+      console.log(JSON.stringify({ input, output: ok ? target : null, before, after, stats, resizeStats, mergeStats, dedupStats, verification: ver }, null, 2));
       continue;
     }
 
@@ -167,6 +175,7 @@ async function runOptimize(opts, log) {
         `  ·  ${stats.layersRetimed} layers retimed  ·  ${stats.propsMadeStatic} props made static` +
         (stats.layersRemoved ? `  ·  ${stats.layersRemoved} dead layers removed` : ''));
     if (resizeStats) log(`  resized to ${optimized.w}x${optimized.h} (x${resizeStats.factor.toFixed(4)}) via ${resizeStats.rootLayersScaled} root layer transform(s); geometry untouched`);
+    if (mergeStats) log(`  merged ${mergeStats.groupsMerged} duplicate-artwork groups, removing ${mergeStats.layersRemoved} layers` + (mergeStats.cyclesBroken ? `  (${mergeStats.cyclesBroken} kept apart to preserve paint order)` : ''));
     if (dedupStats) log(`  ${dedupStats.layersRewritten} layers → ${dedupStats.assetsCreated} shared precomps`);
 
     if (ver) {

@@ -36,6 +36,7 @@ lottie-squeeze animation.json --in-place       # overwrite, only if verification
 | `--tolerance <n>` | permit up to n differing pixels per frame, default `0` |
 | `--strip-names` | drop `nm`/`mn`; safe, costs debuggability |
 | `--precision <n>` | round geometry to n decimals — **not pixel-exact** |
+| `--merge` | merge duplicate artwork into one layer per (shape, position) |
 | `--resize <WxH>` | change declared composition size — **does not reduce file size** |
 | `--dedup` | hoist duplicated paths into shared precomps — **opt-in, see below** |
 | `--bench` | parse / build / per-frame render timings, before vs after |
@@ -84,6 +85,41 @@ Each transform is a no-op for the renderer, by construction:
 Single-element value arrays collapse to scalars, because lottie-web picks
 `ValueProperty` vs `MultiDimensionalProperty` on `typeof k === 'number'` — a
 rotation left as `[0]` gets applied as an array.
+
+## Duplicated paths, and why they usually cannot be merged
+
+Frame-baked exports re-emit the same path once per drawing. On the test file that
+was 1 MB of byte-identical artwork: 2,858 shape layers holding only 698 distinct
+(shape, world position) pairs. Collapsing each pair to one layer with the union of
+its lifetimes would cut the file to ~700 KB, losslessly and with no precomps.
+
+`--merge` does exactly that, and it is gated on paint order. Layers paint in list
+order, so merging moves artwork within the stack; that is only sound if some
+single global order still satisfies every "A paints before B" pair that held
+between layers visible at the same time and whose artwork can overlap. The tool
+builds that constraint graph and accepts merges greedily, keeping each only if the
+order still resolves.
+
+**On character animation it usually finds nothing, and that is the correct
+answer.** On the test file only **10 of 4,967** candidate merges were order-safe.
+A walk cycle legitimately swaps the depth of overlapping parts between drawings,
+so the same artwork at the same position really does sit at different depths at
+different times. Merging anyway renders visibly wrong — 121,000 differing pixels,
+confirmed by rendering it.
+
+Two refinements were needed to get even that far, both worth knowing if you extend
+this:
+
+- Layers that paint nothing (`shapes: []` — the per-frame parent groups) must
+  impose *no* ordering constraint. Treating them as "extent unknown, assume it
+  overlaps" made 305 pure transform nodes into universal barriers that chained
+  every group into one cycle.
+- Bounding boxes are a hopeless overlap proxy on a character: every limb's box
+  intersects every other's. `src/raster.js` scanline-fills each layer's flattened
+  paths into a dilated coverage bitmask, which cut the constraint edges by 24%.
+
+Frame decimation was measured too, and does not help: layers already span several
+drawings, so dropping sample times removed 11 KB of 2.09 MB.
 
 ## Resizing does not compress
 
@@ -139,14 +175,20 @@ indirection is a precomp. On the test file that hoisted 1 MB of duplicated paths
 | | default | `--dedup` |
 | --- | --- | --- |
 | raw JSON | 2.09 MB | **1.24 MB** |
-| brotli | **71.3 KB** | 82.4 KB |
-| render / frame | **1.4 ms** | 2.9 ms |
-| pixel-identical | yes | no (edge seams) |
+| gzip -9 | 360.4 KB | **152.5 KB** |
+| brotli -q11 | **71.3 KB** | 82.4 KB |
+| parse | 27.8 ms | **11.2 ms** |
+| build | **477 ms** | 1040 ms |
+| render / frame | **1.7 ms** | 3.2 ms |
+| pixel-identical | yes | no — 2,733 px of 360,000, on shape edges |
 
-A precomp composites through an intermediate buffer, which both costs runtime and
-perturbs edge anti-aliasing. And brotli's window already captures long-range
-duplication, so it gets *worse* over the wire. Reach for it only when raw parsed
-size is what you are actually paying for, and pass `--tolerance` knowingly.
+The tradeoff is genuinely two-sided, so pick by how you ship. A precomp composites
+through an intermediate buffer: that costs runtime and perturbs edge
+anti-aliasing. Brotli's window already captures the long-range duplication, so
+dedup is *worse* over the wire under brotli — but far better under gzip, whose
+32 KB window cannot see repeats that far apart. Reach for it when you serve gzip,
+or when raw parsed size is what you are paying for, and pass `--tolerance`
+knowingly.
 
 ## API
 

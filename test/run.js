@@ -3,6 +3,7 @@ import { optimize, collapseHolds, trimToLife } from '../src/optimize.js';
 import { dedupeShapes } from '../src/dedup.js';
 import { analyze } from '../src/analyze.js';
 import { resize } from '../src/resize.js';
+import { mergeDuplicateArtwork } from '../src/merge.js';
 
 let pass = 0, fail = 0;
 const test = (name, fn) => {
@@ -168,6 +169,49 @@ test('resize scales spatial tangents on animated position', () => {
 });
 test('non-uniform resize is refused rather than silently distorting', () => {
   assert.throws(() => resize(doc([gatedLayer(1, 10, 20)]), 100, 50), /non-uniform/);
+});
+
+console.log('\nduplicate-artwork merge');
+const far = (ind, on, off, dx) => {
+  const l = gatedLayer(ind, on, off);
+  l.ks.p = { a: 0, k: [dx, 0] };
+  return l;
+};
+test('identical artwork at one position collapses to a single layer', () => {
+  const d = doc([gatedLayer(1, 10, 20), gatedLayer(2, 30, 40)]);
+  const { doc: r, stats } = mergeDuplicateArtwork(optimize(d).doc);
+  assert.equal(stats.groupsMerged, 1);
+  assert.equal(stats.layersRemoved, 1);
+  assert.equal(r.layers.length, 1);
+  const o = r.layers[0].ks.o;
+  assert.equal(o.a, 1, 'two disjoint windows need an on/off schedule');
+  assert.deepEqual(o.k.map((k) => k.t), [10, 20, 30]);
+  assert.equal(r.layers[0].ip, 10);
+  assert.equal(r.layers[0].op, 40);
+});
+test('contiguous windows merge into one span with static opacity', () => {
+  const d = doc([gatedLayer(1, 10, 20), gatedLayer(2, 20, 30)]);
+  const { doc: r } = mergeDuplicateArtwork(optimize(d).doc);
+  assert.equal(r.layers.length, 1);
+  assert.equal(r.layers[0].ks.o.a, 0);
+  assert.equal(r.layers[0].ip, 10);
+  assert.equal(r.layers[0].op, 30);
+});
+test('artwork at a different position is left alone', () => {
+  const d = doc([gatedLayer(1, 10, 20), far(2, 30, 40, 500)]);
+  const { stats } = mergeDuplicateArtwork(optimize(d).doc);
+  assert.equal(stats.groupsMerged, 0);
+});
+test('a merge that would change paint order is refused', () => {
+  // B overlaps A in space and is alive across both of A's windows, so A cannot be
+  // both behind B (first window) and in front of it (second)
+  const a1 = gatedLayer(1, 10, 20), a2 = gatedLayer(3, 30, 40);
+  const b = gatedLayer(2, 10, 40);
+  b.shapes[0].ks.k.v = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  b.shapes[0].ks.k.i = b.shapes[0].ks.k.o = [[0, 0], [0, 0], [0, 0], [0, 0]];
+  const { stats } = mergeDuplicateArtwork(optimize(doc([a1, b, a2])).doc);
+  assert.equal(stats.groupsMerged, 0);
+  assert.ok(stats.cyclesBroken >= 1);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
